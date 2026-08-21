@@ -1,0 +1,1070 @@
+# 微电网多场景建模知识图谱
+# 包含不同场景类型的设备模型、负荷模型、目标函数和约束模板
+
+metadata:
+  version: "2.0"
+  description: "面向场景的微电网建模知识图谱"
+  last_updated: "2026-05-26"
+
+# ==================== 场景类型定义 ====================
+scenarios:
+
+  # -------------------- 并网型微电网 --------------------
+  grid_connected:
+    name: "并网型微电网"
+    description: "微电网通过公共耦合点(PCC)与主电网连接，可进行双向功率交换"
+    keywords: ["并网", "并网型", "grid-connected", "PCC", "电网交换", "购售电"]
+    devices:
+      - id: "PV"
+        name: "光伏"
+        model_type: "renewable"
+        params: ["eta_pv", "A_pv", "I_t", "k_temp", "T_cell"]
+        output_type: "electrical"
+      - id: "WT"
+        name: "风力"
+        model_type: "renewable"
+        params: ["rho", "A_wt", "Cp", "v_t"]
+        output_type: "electrical"
+      - id: "CCHP"
+        name: "冷热电联供"
+        model_type: "dispatchable"
+        params: ["eta_elec", "eta_heat", "F_cchp", "COP_cool"]
+        output_type: "electrical,thermal,cooling"
+      - id: "EES"
+        name: "电储能"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge", "P_charge_max", "P_discharge_max"]
+        output_type: "electrical"
+      - id: "BOILER"
+        name: "燃气锅炉"
+        model_type: "dispatchable"
+        params: ["eta_boiler", "F_boiler"]
+        output_type: "thermal"
+      - id: "GRID"
+        name: "主电网"
+        model_type: "external"
+        params: ["P_grid_max", "price_buy", "price_sell"]
+        output_type: "electrical"
+    loads:
+      - id: "P_load"
+        name: "电负荷"
+        type: "time_series"
+        unit: "kW"
+      - id: "H_load"
+        name: "热负荷"
+        type: "time_series"
+        unit: "kW"
+      - id: "C_load"
+        name: "冷负荷"
+        type: "time_series"
+        unit: "kW"
+    objectives:
+      - id: "economic"
+        name: "经济效益最大化"
+        expression: "max Profit = Revenue - Cost = Σ(P_grid_sell * price_sell) - Σ(P_grid_buy * price_buy) - Σ(C_fuel)"
+        default_weight: 1.0
+      - id: "emission"
+        name: "环保效益"
+        expression: "min Emission = Σ(E_CO2_fuel + E_CO2_grid)"
+        default_weight: 0.3
+    constraints:
+      - id: "power_balance"
+        type: "equality"
+        expression: "P_pv(t) + P_wt(t) + P_cchp_e(t) + P_ees_discharge(t) + P_grid_buy(t) = P_load(t) + P_ees_charge(t) + P_grid_sell(t) + P_loss(t)"
+      - id: "thermal_balance"
+        type: "equality"
+        expression: "H_cchp(t) + H_boiler(t) + H_tes_discharge(t) = H_load(t) + H_tes_charge(t)"
+      - id: "device_limits"
+        type: "box"
+        expression: "P_min <= P_device(t) <= P_max"
+      - id: "ees_soc"
+        type: "box"
+        expression: "SOC_min <= SOC(t) <= SOC_max"
+      - id: "grid_limits"
+        type: "box"
+        expression: "0 <= P_grid_buy(t) <= P_grid_max; 0 <= P_grid_sell(t) <= P_grid_max"
+    code_template:
+      solver: "scipy.optimize.minimize"
+      framework: "optimization"
+
+  # -------------------- 离网/孤岛型微电网 --------------------
+  islanded:
+    name: "离网/孤岛型微电网"
+    description: "微电网与主电网完全断开，独立运行，必须依靠自身资源满足负荷需求"
+    keywords: ["离网", "孤岛", "islanded", "off-grid", "独立运行", "自主调度"]
+    devices:
+      - id: "PV"
+        name: "光伏"
+        model_type: "renewable"
+        params: ["eta_pv", "A_pv", "I_t", "k_temp"]
+        output_type: "electrical"
+      - id: "WT"
+        name: "风力"
+        model_type: "renewable"
+        params: ["rho", "A_wt", "Cp", "v_t"]
+        output_type: "electrical"
+      - id: "DG"
+        name: "柴油发电机"
+        model_type: "dispatchable"
+        params: ["eta_dg", "F_dg", "C_fuel_dg", "a_dg", "b_dg", "c_dg"]
+        output_type: "electrical"
+        note: "孤岛型必备应急电源"
+      - id: "EES"
+        name: "电储能"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge"]
+        output_type: "electrical"
+        note: "核心设备，需保证净能量平衡"
+      - id: "TES"
+        name: "热储能"
+        model_type: "storage"
+        params: ["H_max", "H_min", "sigma_tes", "eta_tes"]
+        output_type: "thermal"
+    loads:
+      - id: "P_load"
+        name: "电负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "可包含可平移负荷"
+      - id: "H_load"
+        name: "热负荷"
+        type: "time_series"
+        unit: "kW"
+    objectives:
+      - id: "reliability"
+        name: "供电可靠性"
+        expression: "min unmet_load = Σ(max(0, P_load(t) - P_available(t)))"
+        default_weight: 1.0
+      - id: "cost"
+        name: "运行成本最小化"
+        expression: "min Cost = Σ(C_fuel_dg + C_diesel + O&M)"
+        default_weight: 0.8
+      - id: "renewable_max"
+        name: "可再生能源最大化利用"
+        expression: "max Σ(P_pv + P_wt)"
+        default_weight: 0.5
+    constraints:
+      - id: "power_balance_strict"
+        type: "equality"
+        expression: "P_pv(t) + P_wt(t) + P_dg(t) + P_ees_discharge(t) = P_load(t) + P_ees_charge(t)"
+        note: "离网型严格平衡"
+      - id: "renewable_curtailment"
+        type: "inequality"
+        expression: "P_pv_curtail(t) >= 0, P_wt_curtail(t) >= 0"
+      - id: "diesel_fuel"
+        type: "box"
+        expression: "F_dg_min <= F_dg(t) <= F_dg_max"
+      - id: "spinning_reserve"
+        type: "inequality"
+        expression: "P_dg_max + P_ees_discharge_max >= 1.1 * P_load_max"
+    code_template:
+      solver: "scipy.optimize.minimize"
+      framework: "optimization"
+
+  # -------------------- 多能互补微电网 --------------------
+  multi_energy:
+    name: "多能互补微电网"
+    description: "包含冷/热/电等多种能量形式的微电网，实现能量梯级利用"
+    keywords: ["多能互补", "冷热电", "CCHP", "热泵", "吸收式制冷", "multi-energy", "tri-generation"]
+    devices:
+      - id: "PV"
+        name: "光伏"
+        model_type: "renewable"
+        params: ["eta_pv", "A_pv", "I_t"]
+        output_type: "electrical"
+      - id: "WT"
+        name: "风力"
+        model_type: "renewable"
+        params: ["rho", "A_wt", "Cp", "v_t"]
+        output_type: "electrical"
+      - id: "CCHP"
+        name: "冷热电联供"
+        model_type: "dispatchable"
+        params: ["eta_elec", "eta_heat", "COP_cool", "F_cchp"]
+        output_type: "electrical,thermal,cooling"
+        note: "核心设备，能量梯级利用"
+      - id: "HP"
+        name: "热泵"
+        model_type: "dispatchable"
+        params: ["COP_hp", "P_hp", "T_amb"]
+        output_type: "thermal"
+      - id: "EES"
+        name: "电储能"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge"]
+        output_type: "electrical"
+      - id: "TES"
+        name: "热储能"
+        model_type: "storage"
+        params: ["H_max", "H_min", "sigma_tes", "eta_tes"]
+        output_type: "thermal"
+      - id: "CES"
+        name: "冷储能"
+        model_type: "storage"
+        params: ["C_max", "C_min", "sigma_ces", "eta_ces"]
+        output_type: "cooling"
+    loads:
+      - id: "P_load"
+        name: "电负荷"
+        type: "time_series"
+        unit: "kW"
+      - id: "H_load"
+        name: "热负荷"
+        type: "time_series"
+        unit: "kW"
+      - id: "C_load"
+        name: "冷负荷"
+        type: "time_series"
+        unit: "kW"
+    objectives:
+      - id: "energy_cascade"
+        name: "能源梯级利用最大化"
+        expression: "max Energy_Cascade = η_cascade * Σ(P_fuel)"
+      - id: "economic"
+        name: "综合经济效益"
+        expression: "min Cost = C_fuel + C_grid - R_sell"
+      - id: "co2_reduction"
+        name: "碳排放最小化"
+        expression: "min CO2 = Σ(CO2_fuel + CO2_grid)"
+    constraints:
+      - id: "elec_balance"
+        type: "equality"
+        expression: "P_pv + P_wt + P_cchp + P_grid = P_load + P_hp + P_eess_charge + P_loss"
+      - id: "thermal_balance"
+        type: "equality"
+        expression: "H_cchp + H_hp = H_load + H_tess_charge"
+      - id: "cooling_balance"
+        type: "equality"
+        expression: "C_cchp + C_absorption = C_load + C_cess_charge"
+      - id: "cascade_efficiency"
+        type: "inequality"
+        expression: "H_cchp/C_cchp >= COP_absorption_min"
+    code_template:
+      solver: "scipy.optimize.minimize"
+      framework: "optimization"
+
+  # -------------------- 多微电网群(NME) --------------------
+  nmg:
+    name: "多微电网群"
+    description: "多个微电网通过配电网络互联，可进行微电网间的功率调度"
+    keywords: ["多微电网", "NME", "微电网群", "配电网", "IEEE33", "互联调度", "multi-microgrid"]
+    devices:
+      - id: "MG_i"
+        name: "子微电网i"
+        model_type: "composite"
+        contains: ["PV", "WT", "CCHP", "EES", "loads"]
+        output_type: "electrical,thermal"
+        note: "每个MG都是独立调度单元"
+      - id: "DIST_NETWORK"
+        name: "配电网络"
+        model_type: "network"
+        params: ["topology", "line_params", "V_base", "Z_line"]
+        note: "IEEE 33/69节点配电网络"
+      - id: "PCC"
+        name: "公共耦合点"
+        model_type: "interface"
+        params: ["V_pcc", "P_pcc_max"]
+    loads:
+      - id: "P_load_i"
+        name: "各微电网电负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "各MG可能有不同的负荷特性"
+    objectives:
+      - id: "nme_economic"
+        name: "NME总体经济效益最大化"
+        expression: "max Profit_NME = Σ(Profit_MG_i) - C_grid_tie_loss - C_network_loss"
+      - id: "load_sharing"
+        name: "负荷共享优化"
+        expression: "min |P_trade_ij| 尽量减少微电网间不必要的功率交易"
+    constraints:
+      - id: "mg_power_balance"
+        type: "equality"
+        expression: "每个MG内部: ΣP_gen_i = P_load_i + P_pcc_i + P_loss_i"
+      - id: "power_flow"
+        type: "network"
+        expression: "潮流约束: V_i = f(P_ij, Q_ij, Z_ij)"
+        note: "需满足IEEE配电网络潮流方程"
+      - id: "voltage_profile"
+        type: "box"
+        expression: "V_min <= V_i(t) <= V_max (通常 0.95 <= V_i <= 1.05)"
+      - id: "line_thermal"
+        type: "box"
+        expression: "|S_ij(t)| <= S_ij_max (线路热稳定极限)"
+      - id: "pcc_limits"
+        type: "box"
+        expression: "P_pcc_min <= P_pcc(t) <= P_pcc_max"
+    code_template:
+      solver: "ortools.linear_solver"
+      framework: "optimization"
+
+  # -------------------- 电动汽车集成微电网 --------------------
+  ev_integrated:
+    name: "电动汽车集成微电网"
+    description: "包含电动汽车作为移动储能资源的微电网系统"
+    keywords: ["电动汽车", "EV", "V2G", "充电站", "移动储能", "EV_aggregation"]
+    devices:
+      - id: "PV"
+        name: "光伏"
+        model_type: "renewable"
+        params: ["eta_pv", "A_pv", "I_t"]
+        output_type: "electrical"
+      - id: "WT"
+        name: "风力"
+        model_type: "renewable"
+        params: ["rho", "A_wt", "Cp", "v_t"]
+        output_type: "electrical"
+      - id: "EES"
+        name: "固定储能"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge"]
+        output_type: "electrical"
+      - id: "EV_FLEET"
+        name: "EV车队"
+        model_type: "mobile_storage"
+        params: ["N_ev", "E_battery", "SOC_init", "SOC_target", "T_arrival", "T_departure", "eta_v2g"]
+        output_type: "electrical"
+        note: "V2G功能使EV可向电网放电"
+      - id: "EVCS"
+        name: "充电站"
+        model_type: "charging_station"
+        params: ["N_charger", "P_charger_max", "price_charge"]
+        output_type: "charging"
+    loads:
+      - id: "P_load"
+        name: "基础电负荷"
+        type: "time_series"
+        unit: "kW"
+      - id: "P_ev_charge"
+        name: "EV充电负荷"
+        type: "controlled"
+        unit: "kW"
+        note: "可控负荷，可在时间窗口内调度"
+    objectives:
+      - id: "valley_filling"
+        name: "填谷削峰"
+        expression: "min Σ|P_grid(t) - P_target(t)|"
+        note: "利用EV充电负荷填谷"
+      - id: "ev_charging_cost"
+        name: "EV充电成本最小化"
+        expression: "min Σ(P_ev_charge(t) * price(t))"
+      - id: "v2g_revenue"
+        name: "V2G收益最大化"
+        expression: "max Σ(P_v2g(t) * price_sell(t))"
+    constraints:
+      - id: "ev_energy_requirement"
+        type: "equality"
+        expression: "Σ(P_charge(t) * eta_charge) - Σ(P_discharge(t) / eta_v2g) = E_required"
+      - id: "ev_charging_window"
+        type: "box"
+        expression: "T_arrival <= t <= T_departure"
+      - id: "ev_soc_limits"
+        type: "box"
+        expression: "SOC_min <= SOC(t) <= SOC_max"
+      - id: "charger_capacity"
+        type: "box"
+        expression: "ΣP_charge(t) <= N_charger * P_charger_max"
+    code_template:
+      solver: "scipy.optimize.minimize"
+      framework: "optimization"
+
+  # -------------------- 工业型微电网 --------------------
+  industrial:
+    name: "工业型微电网"
+    description: "面向工业园区的高可靠供电系统，包含重要负荷和可中断负荷"
+    keywords: ["工业", "园区", "重要负荷", "可中断负荷", "industrial", "critical_load", "interruptible"]
+    devices:
+      - id: "PV"
+        name: "光伏"
+        model_type: "renewable"
+        params: ["eta_pv", "A_pv", "I_t"]
+        output_type: "electrical"
+      - id: "WT"
+        name: "风力"
+        model_type: "renewable"
+        params: ["rho", "A_wt", "Cp", "v_t"]
+        output_type: "electrical"
+      - id: "GT"
+        name: "燃气轮机"
+        model_type: "dispatchable"
+        params: ["eta_gt", "F_gt", "a_gt", "b_gt", "c_gt"]
+        output_type: "electrical,thermal"
+      - id: "EES"
+        name: "储能"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge"]
+        output_type: "electrical"
+      - id: "UPS"
+        name: "不间断电源"
+        model_type: "backup"
+        params: ["P_ups_max", "T_ups_max", "E_ups"]
+        output_type: "electrical"
+        note: "重要负荷的应急保障"
+    loads:
+      - id: "P_critical"
+        name: "重要负荷"
+        type: "fixed"
+        unit: "kW"
+        note: "不可中断"
+      - id: "P_interruptible"
+        name: "可中断负荷"
+        type: "flexible"
+        unit: "kW"
+        note: "可在电价高峰或紧急情况下中断"
+      - id: "P_process"
+        name: "工艺负荷"
+        type: "time_coupled"
+        unit: "kW"
+        note: "需按工艺顺序运行"
+    objectives:
+      - id: "reliability"
+        name: "供电可靠性最大化"
+        expression: "max Reliability = Σ(w_i * P_critical_i) / ΣP_load"
+        note: "重要负荷供电保障优先"
+      - id: "cost"
+        name: "运行成本最小化"
+        expression: "min Cost = Σ(C_fuel + C_grid + C_interruption_penalty)"
+      - id: "carbon"
+        name: "碳排放约束"
+        expression: "min CO2 = Σ(CO2_fuel + CO2_grid) <= CO2_limit"
+    constraints:
+      - id: "critical_load_priority"
+        type: "priority"
+        expression: "P_gen(t) >= P_critical(t) + P_reserve (重要负荷优先)"
+      - id: "interruption_penalty"
+        type: "cost"
+        expression: "Cost_interrupt = Σ(β_i * P_interrupt_i * T_interrupt_i)"
+      - id: "reserve_margin"
+        type: "inequality"
+        expression: "P_available >= (1 + reserve_margin) * P_critical_max"
+      - id: "load_shedding"
+        type: "binary"
+        expression: "u_interrupt_i(t) ∈ {0,1} (可中断负荷开关)"
+    code_template:
+      solver: "pulp"
+      framework: "mixed_integer"
+
+  # -------------------- 农业型微电网 --------------------
+  agricultural:
+    name: "农业型微电网"
+    description: "面向农业生产的微电网系统，包含灌溉负荷、温室大棚、养殖用电等多种农业负荷"
+    keywords: ["农业", "农村", "灌溉", "温室", "大棚", "养殖", "agricultural", "farming", "irrigation", "greenhouse"]
+    devices:
+      - id: "PV"
+        name: "光伏"
+        model_type: "renewable"
+        params: ["eta_pv", "A_pv", "I_t", "k_temp"]
+        output_type: "electrical"
+        note: "农业屋顶/大棚光伏是主要形式"
+      - id: "WT"
+        name: "风力"
+        model_type: "renewable"
+        params: ["rho", "A_wt", "Cp", "v_t"]
+        output_type: "electrical"
+      - id: "BIO_GAS"
+        name: "沼气发电机"
+        model_type: "dispatchable"
+        params: ["eta_bio", "V_bio", "C_bio_fuel", "CH4_content"]
+        output_type: "electrical,thermal"
+        note: "农业废弃物沼气发电，环保可再生"
+      - id: "DIESEL"
+        name: "柴油发电机"
+        model_type: "backup"
+        params: ["P_diesel_max", "C_diesel", "fuel_consumption"]
+        output_type: "electrical"
+        note: "应急备用电源"
+      - id: "EES"
+        name: "电储能"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge"]
+        output_type: "electrical"
+      - id: "PUMP"
+        name: "灌溉水泵"
+        model_type: "controllable"
+        params: ["P_pump_max", "eta_pump", "H_head", "Q_water"]
+        output_type: "mechanical"
+        note: "可控负荷，可平移灌溉时间"
+      - id: "GRID"
+        name: "主电网"
+        model_type: "external"
+        params: ["P_grid_max", "price_buy", "price_sell", "rural_tariff"]
+        output_type: "electrical"
+    loads:
+      - id: "P_irrigation"
+        name: "灌溉电负荷"
+        type: "controllable"
+        unit: "kW"
+        note: "可平移负荷，灌溉时间可调度"
+      - id: "P_greenhouse"
+        name: "温室大棚负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "包含通风、供暖、照明、补光灯"
+      - id: "P_livestock"
+        name: "养殖电负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "包含通风、供暖、饲料加工、挤奶设备"
+      - id: "P_household"
+        name: "农户生活负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "农民日常生活用电"
+      - id: "H_greenhouse"
+        name: "温室热负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "冬季供暖需求"
+    objectives:
+      - id: "agricultural_economic"
+        name: "农业生产综合效益最大化"
+        expression: "max Benefit = R_crop + R_livestock + R_power_sell - C_operation - C_grid"
+        default_weight: 1.0
+      - id: "irrigation_cost"
+        name: "灌溉成本最小化"
+        expression: "min C_irrigation = Σ(P_pump(t) * price(t))"
+        default_weight: 0.8
+      - id: "renewable_self_consumption"
+        name: "可再生能源自用最大化"
+        expression: "max η_self = Σ(P_pv_self(t)) / Σ(P_pv(t))"
+        default_weight: 0.6
+    constraints:
+      - id: "power_balance"
+        type: "equality"
+        expression: "P_pv(t) + P_wt(t) + P_bio(t) + P_diesel(t) + P_eess_discharge(t) + P_grid_buy(t) = P_load(t) + P_pump(t) + P_eess_charge(t) + P_grid_sell(t)"
+      - id: "irrigation_requirement"
+        type: "equality"
+        expression: "Σ(Q_water(t)) >= Q_water_daily (日灌溉水量需求)"
+      - id: "pump_limits"
+        type: "box"
+        expression: "0 <= P_pump(t) <= P_pump_max"
+      - id: "bio_gas_supply"
+        type: "box"
+        expression: "0 <= V_bio(t) <= V_bio_max (沼气供应限制)"
+      - id: "diesel_reserve"
+        type: "inequality"
+        expression: "F_diesel_stock >= F_diesel_min (应急储备)"
+      - id: "greenhouse_temp"
+        type: "range"
+        expression: "T_greenhouse_min <= T_greenhouse(t) <= T_greenhouse_max (温室温度范围)"
+    code_template:
+      solver: "scipy.optimize.minimize"
+      framework: "optimization"
+
+  # -------------------- 商业型微电网 --------------------
+  commercial:
+    name: "商业型微电网"
+    description: "面向商业建筑（商场、办公楼、酒店等）的微电网系统，负荷特性受营业时间影响大"
+    keywords: ["商业", "商场", "办公楼", "酒店", "写字楼", "商业建筑", "commercial", "office_building", "hotel", "mall"]
+    devices:
+      - id: "PV"
+        name: "光伏"
+        model_type: "renewable"
+        params: ["eta_pv", "A_pv", "I_t"]
+        output_type: "electrical"
+        note: "建筑屋顶光伏"
+      - id: "BESS"
+        name: "电池储能系统"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge", "P_max"]
+        output_type: "electrical"
+        note: "用于峰谷套利和需求响应"
+      - id: "CHILLER"
+        name: "电制冷机"
+        model_type: "dispatchable"
+        params: ["COP_chiller", "P_chiller", "C_chiller"]
+        output_type: "cooling"
+      - id: "HP"
+        name: "热泵"
+        model_type: "dispatchable"
+        params: ["COP_hp", "P_hp", "T_amb"]
+        output_type: "thermal,cooling"
+      - id: "EVCS"
+        name: "商业充电桩"
+        model_type: "charging"
+        params: ["N_charger", "P_charger_max", "price_charge", "price_v2g"]
+        output_type: "charging"
+        note: "商业停车场EV充电设施"
+      - id: "GRID"
+        name: "主电网"
+        model_type: "external"
+        params: ["P_grid_max", "price_buy", "price_sell", "demand_charge"]
+        output_type: "electrical"
+        note: "商业电价含需量电费"
+    loads:
+      - id: "P_lighting"
+        name: "照明负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "随时间变化，商业建筑主要负荷之一"
+      - id: "P_hvac"
+        name: "暖通空调负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "受室外温度影响大"
+      - id: "P_equipment"
+        name: "办公/商业设备负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "电梯、扶梯、显示屏等"
+      - id: "C_cooling"
+        name: "冷负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "空调制冷"
+      - id: "H_heating"
+        name: "热负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "冬季供暖"
+      - id: "P_ev_charge"
+        name: "EV充电负荷"
+        type: "controllable"
+        unit: "kW"
+        note: "可控负荷，可引导充电时间"
+    objectives:
+      - id: "commercial_cost"
+        name: "运行成本最小化"
+        expression: "min Cost = C_grid_energy + C_demand_charge + C_bess_cycle - R_power_sell"
+        default_weight: 1.0
+      - id: "demand_response"
+        name: "需求响应优化"
+        expression: "min Peak_Demand = max(P_grid(t)) 降低最大需量"
+        default_weight: 0.9
+      - id: "valley_arbitrage"
+        name: "峰谷套利收益"
+        expression: "max Profit_valley = Σ(P_bess_charge(t_low)*price_low - P_bess_discharge(t_high)*price_high)"
+        default_weight: 0.7
+      - id: "tenant_comfort"
+        name: "租户舒适度保障"
+        expression: "min Comfort_Penalty = Σ(|T_zone - T_setpoint|)"
+        default_weight: 0.5
+    constraints:
+      - id: "power_balance"
+        type: "equality"
+        expression: "P_pv(t) + P_bess_discharge(t) + P_grid(t) = P_load(t) + P_chiller(t) + P_hp(t) + P_bess_charge(t) + P_ev_charge(t)"
+      - id: "thermal_balance"
+        type: "equality"
+        expression: "Q_hp(t) + Q_booster(t) = H_load(t) (热平衡)"
+      - id: "cooling_balance"
+        type: "equality"
+        expression: "C_chiller(t) + C_hp(t) = C_load(t) (冷平衡)"
+      - id: "bess_soc_cycle"
+        type: "soc_cycle"
+        expression: "SOC(t+1) = SOC(t) + (P_charge*eta - P_discharge/eta)*dt; SOC_min <= SOC <= SOC_max"
+      - id: "demand_charge_limit"
+        type: "box"
+        expression: "P_grid(t) <= P_demand_limit (需量控制)"
+      - id: "ev_charging_window"
+        type: "time_window"
+        expression: "P_ev_charge(t) = 0 if t < T_business_start or t > T_business_end (营业时间外快充)"
+      - id: "thermal_comfort"
+        type: "box"
+        expression: "T_zone_min <= T_zone(t) <= T_zone_max (区域温度舒适范围)"
+    code_template:
+      solver: "scipy.optimize.minimize"
+      framework: "optimization"
+
+  # -------------------- 住宅型微电网 --------------------
+  residential:
+    name: "住宅型微电网"
+    description: "面向住宅小区或单个家庭的微电网系统，以用户侧经济性和舒适度为主要优化目标"
+    keywords: ["住宅", "居民", "家庭", "小区", "别墅", "residential", "home", "household", "villa", "community"]
+    devices:
+      - id: "PV"
+        name: "屋顶光伏"
+        model_type: "renewable"
+        params: ["eta_pv", "A_pv", "I_t", "orientation", "tilt_angle"]
+        output_type: "electrical"
+        note: "家庭屋顶光伏，容量通常3-20kW"
+      - id: "BESS"
+        name: "家用储能"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge", "P_max"]
+        output_type: "electrical"
+        note: "家用锂电池，容量5-15kWh"
+      - id: "HP"
+        name: "空气源热泵"
+        model_type: "dispatchable"
+        params: ["COP_hp", "P_hp", "T_amb"]
+        output_type: "thermal,cooling"
+        note: "提供热水、供暖、制冷"
+      - id: "EV_HOME"
+        name: "家用电动汽车"
+        model_type: "mobile_storage"
+        params: ["E_battery", "SOC_init", "SOC_target", "T_arrival", "T_departure", "eta_v2g"]
+        output_type: "electrical"
+        note: "私家车，下班回家后可作为储能"
+      - id: "WH"
+        name: "热水器"
+        model_type: "thermal_storage"
+        params: ["V_tank", "T_min", "T_max", "COP_hwh", "P_wh"]
+        output_type: "thermal"
+        note: "储热式热水器，可作为热储能"
+      - id: "GRID"
+        name: "主电网"
+        model_type: "external"
+        params: ["P_grid_max", "price_tou", "feed_in_tariff"]
+        output_type: "electrical"
+        note: "分时电价，自发自用余电上网"
+    loads:
+      - id: "P_base"
+        name: "基础负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "冰箱、照明、插座等基本用电"
+      - id: "P_hvac"
+        name: "空调/采暖负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "受季节和时间影响大"
+      - id: "P_ev_home"
+        name: "家庭EV充电"
+        type: "controllable"
+        unit: "kW"
+        note: "可在夜间低谷时段充电"
+      - id: "H_water"
+        name: "生活热水"
+        type: "thermal"
+        unit: "kW"
+        note: "热泵热水器供应"
+      - id: "P_appliance"
+        name: "家电负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "洗衣机、洗碗机、烘干机等"
+    objectives:
+      - id: "home_economic"
+        name: "家庭用电成本最小化"
+        expression: "min C_home = Σ(P_grid_buy(t)*price_tou(t)) - Σ(P_feed_in(t)*feed_in_tariff) - C_bess_degradation"
+        default_weight: 1.0
+      - id: "self_consumption_max"
+        name: "光伏自用最大化"
+        expression: "max η_self = Σ(P_pv_self(t)) / Σ(P_pv(t))"
+        default_weight: 0.8
+      - id: "import_export_arbitrage"
+        name: "峰谷套利"
+        expression: "max Profit_bess = Σ(P_discharge(t_peak)*price_peak - P_charge(t_valley)*price_valley)"
+        default_weight: 0.7
+      - id: "comfort_maintain"
+        name: "生活舒适度保障"
+        expression: "min Penalty = w_T * Σ|T_zone - T_set| + w_H * Σ|H_water - H_demand|"
+        default_weight: 0.5
+    constraints:
+      - id: "power_balance"
+        type: "equality"
+        expression: "P_pv(t) + P_bess_discharge(t) + P_grid(t) + P_v2g(t) = P_load(t) + P_bess_charge(t) + P_ev_charge(t)"
+      - id: "bess_soc"
+        type: "box"
+        expression: "SOC_min <= SOC(t) <= SOC_max"
+      - id: "bess_power"
+        type: "box"
+        expression: "-P_charge_max <= P_bess(t) <= P_discharge_max"
+      - id: "ev_soc_window"
+        type: "time_window"
+        expression: "SOC_ev(t_depart) >= SOC_target (出发时EV电量要求)"
+      - id: "water_temp"
+        type: "box"
+        expression: "T_water_min <= T_water(t) <= T_water_max (热水温度范围)"
+      - id: "thermal_comfort"
+        type: "box"
+        expression: "T_zone_min <= T_zone(t) <= T_zone_max (室内温度舒适范围)"
+      - id: "pv_export_limit"
+        type: "box"
+        expression: "0 <= P_feed_in(t) <= P_feed_in_max (上网功率限制)"
+    code_template:
+      solver: "scipy.optimize.minimize"
+      framework: "optimization"
+
+  # -------------------- 多能源型微电网 --------------------
+  multi_energy_hub:
+    name: "多能源型微电网"
+    description: "以能源Hub为核心理念，整合电/热/冷/气/氢等多种能源形式的综合能源系统"
+    keywords: ["多能源", "综合能源", "能源Hub", "能源路由器", "power-to-gas", "氢能", "燃气", "multi-energy", "energy_hub", "P2G", "hydrogen"]
+    devices:
+      - id: "PV"
+        name: "光伏"
+        model_type: "renewable"
+        params: ["eta_pv", "A_pv", "I_t"]
+        output_type: "electrical"
+      - id: "WT"
+        name: "风力"
+        model_type: "renewable"
+        params: ["rho", "A_wt", "Cp", "v_t"]
+        output_type: "electrical"
+      - id: "CHP"
+        name: "燃气内燃机/微型燃气轮机"
+        model_type: "dispatchable"
+        params: ["eta_elec_chp", "eta_heat_chp", "F_gas", "C_gas"]
+        output_type: "electrical,thermal"
+        note: "同时提供电热的燃气设备"
+      - id: "GB"
+        name: "燃气锅炉"
+        model_type: "dispatchable"
+        params: ["eta_boiler", "F_boiler"]
+        output_type: "thermal"
+      - id: "HP"
+        name: "空气源/水源热泵"
+        model_type: "dispatchable"
+        params: ["COP_hp", "P_hp", "T_amb", "heat_source"]
+        output_type: "thermal,cooling"
+      - id: "EES"
+        name: "电储能"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge"]
+        output_type: "electrical"
+      - id: "TES"
+        name: "储热罐"
+        model_type: "storage"
+        params: ["H_cap", "T_min", "T_max", "sigma_tes", "eta_tes"]
+        output_type: "thermal"
+      - id: "P2G"
+        name: "电转气设备"
+        model_type: "conversion"
+        params: ["eta_p2g", "P_p2g_max", "C_p2g", "H_hydrogen"]
+        output_type: "hydrogen,natural_gas"
+        note: "电解水制氢，余电转燃气"
+      - id: "H2_FC"
+        name: "氢燃料电池"
+        model_type: "dispatchable"
+        params: ["eta_fc", "P_fc_max", "H2_consumption"]
+        output_type: "electrical,thermal"
+        note: "氢气发电，同时产热"
+      - id: "GAS_STORAGE"
+        name: "储气罐"
+        model_type: "storage"
+        params: ["V_gas_max", "V_gas_min", "P_gas_storage"]
+        output_type: "natural_gas,hydrogen"
+      - id: "GRID"
+        name: "电网"
+        model_type: "external"
+        params: ["P_grid_max", "price_buy", "price_sell"]
+        output_type: "electrical"
+      - id: "GAS_GRID"
+        name: "燃气管网"
+        model_type: "external"
+        params: ["F_gas_max", "price_gas", "gas_calorific"]
+        output_type: "natural_gas"
+    loads:
+      - id: "P_load"
+        name: "电负荷"
+        type: "time_series"
+        unit: "kW"
+      - id: "H_load"
+        name: "热负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "暖气、生活热水、工艺热"
+      - id: "C_load"
+        name: "冷负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "空调制冷"
+      - id: "GAS_load"
+        name: "气负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "炊事、工业用气"
+      - id: "H2_load"
+        name: "氢负荷"
+        type: "time_series"
+        unit: "kg/h"
+        note: "氢燃料汽车加氢等"
+    objectives:
+      - id: "multi_energy_economic"
+        name: "多能源综合成本最小化"
+        expression: "min C_total = C_gas + C_grid + C_h2 - R_power_sell - R_gas_sell - R_h2_sell"
+        default_weight: 1.0
+      - id: "energy_coupling"
+        name: "能源耦合优化"
+        expression: "max η_coupling = Σ(P_heat_recovered) / Σ(P_fuel_input)"
+        default_weight: 0.8
+      - id: "co2_reduction"
+        name: "碳排放最小化"
+        expression: "min CO2 = Σ(CO2_gas + CO2_grid) - CO2_credit"
+        default_weight: 0.7
+      - id: "renewable_integration"
+        name: "可再生能源消纳最大化"
+        expression: "max R_renew = Σ(P_pv + P_wt) - Σ(P_curtailment)"
+        default_weight: 0.6
+    constraints:
+      - id: "elec_balance"
+        type: "equality"
+        expression: "P_pv + P_wt + P_chp + P_fc + P_eess_discharge + P_grid = P_load + P_hp + P_p2g + P_eess_charge + P_curtailment"
+      - id: "thermal_balance"
+        type: "equality"
+        expression: "H_chp + H_boiler + H_hp + H_fc + H_tes_discharge = H_load + H_tes_charge"
+      - id: "gas_balance"
+        type: "equality"
+        expression: "F_chp + F_boiler + F_gas_grid + F_p2g = GAS_load + F_gas_storage_charge"
+      - id: "hydrogen_balance"
+        type: "equality"
+        expression: "H2_p2g = H2_load + H2_fc + H2_storage_charge"
+      - id: "p2g_limits"
+        type: "box"
+        expression: "0 <= P_p2g(t) <= P_p2g_max (电转气功率限制)"
+      - id: "fc_limits"
+        type: "box"
+        expression: "0 <= P_fc(t) <= P_fc_max (燃料电池功率限制)"
+      - id: "energy_conversion_efficiency"
+        type: "inequality"
+        expression: "η_system >= η_min (系统综合能效下限)"
+      - id: "carbon_quota"
+        type: "inequality"
+        expression: "CO2_total <= CO2_limit (碳排放配额)"
+    code_template:
+      solver: "scipy.optimize.minimize"
+      framework: "nonlinear_optimization"
+
+  # -------------------- 净零能耗建筑型微电网 --------------------
+  net_zero:
+    name: "净零能耗建筑型微电网"
+    description: "追求净零能耗目标的建筑微电网，通过产能、储能、需求响应实现年度能量平衡"
+    keywords: ["净零", "近零能耗", "被动式建筑", "产能建筑", "net-zero", "nearly-zero", "positive_energy", "passive_house"]
+    devices:
+      - id: "BIPV"
+        name: "建筑一体化光伏"
+        model_type: "renewable"
+        params: ["eta_bipv", "A_bipv", "I_t", "orientation", "BIPV_type"]
+        output_type: "electrical"
+        note: "幕墙/屋顶光伏，与建筑一体化"
+      - id: "WIND_TURBINE"
+        name: "小型风机"
+        model_type: "renewable"
+        params: ["P_rated", "v_cut_in", "v_rated", "eta_wt"]
+        output_type: "electrical"
+        note: "建筑附设小型风机"
+      - id: "BESS"
+        name: "建筑储能"
+        model_type: "storage"
+        params: ["E_max", "E_min", "sigma", "eta_charge", "eta_discharge"]
+        output_type: "electrical"
+      - id: "PCM"
+        name: "相变储热材料"
+        model_type: "thermal_storage"
+        params: ["H_melting", "T_melting", "C_pcm", "mass_pcm"]
+        output_type: "thermal"
+        note: "被动式建筑温度调节"
+      - id: "HP"
+        name: "高效热泵"
+        model_type: "dispatchable"
+        params: ["COP_hp", "P_hp_max", "T_supply"]
+        output_type: "thermal,cooling"
+        note: "高COP热泵满足供暖需求"
+      - id: "DC"
+        name: "直流建筑系统"
+        model_type: "dc_system"
+        params: ["V_dc_bus", "efficiency_dc"]
+        output_type: "electrical"
+        note: "建筑内部直流配电，减少转换损耗"
+      - id: "GRID"
+        name: "主电网"
+        model_type: "external"
+        params: ["P_grid_max", "price_net_metering"]
+        output_type: "electrical"
+        note: "净计量电价，年终结算"
+    loads:
+      - id: "P_building"
+        name: "建筑基础负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "照明、插座、设备，极低能耗设计"
+      - id: "H_passive"
+        name: "被动式供暖"
+        type: "passive"
+        unit: "kW"
+        note: "依靠太阳得热和内部热源的被动供暖"
+      - id: "P_hvac"
+        name: "主动暖通负荷"
+        type: "time_series"
+        unit: "kW"
+        note: "热泵供暖/制冷"
+    objectives:
+      - id: "net_zero_balance"
+        name: "年度净零能耗平衡"
+        expression: "min Net_Energy = Σ(E_gen_annual) - Σ(E_consumed_annual) 目标接近0"
+        default_weight: 1.0
+      - id: "grid_interaction_min"
+        name: "与电网交互最小化"
+        expression: "min Σ|P_grid(t)| 年度净购电量最小化"
+        default_weight: 0.8
+      - id: "comfort_optimum"
+        name: "室内舒适度最优化"
+        expression: "min Penalty_comfort = Σw_i*|T_zone - T_set|"
+        default_weight: 0.6
+    constraints:
+      - id: "annual_energy_balance"
+        type: "annual_balance"
+        expression: "Σ(E_pv + E_wind) >= (1 - η_grid_import) * Σ(E_load) 年度产能覆盖消费"
+      - id: "passive_solar_gain"
+        type: "passive_solar"
+        expression: "H_passive(t) = α * A_window * I_solar(t) - U * A_env * (T_zone - T_amb)"
+      - id: "pcm_thermal_buffer"
+        type: "pcm_buffer"
+        expression: "H_pcm(t+1) = H_pcm(t) + Q_pcm_gain - Q_pcm_loss (相变储热)"
+      - id: "dc_efficiency"
+        type: "dc_balance"
+        expression: "P_dc_load = P_dc_gen * η_dc_conversion (直流系统)"
+    code_template:
+      solver: "scipy.optimize.minimize"
+      framework: "optimization"
+
+# ==================== 通用知识组件 ====================
+common_knowledge:
+
+  # 设备通用参数
+  device_defaults:
+    PV:
+      eta_pv: 0.18
+      k_temp: 0.004
+      T_cell_nominal: 25
+    WT:
+      rho: 1.225
+      Cp_max: 0.59
+      v_cut_in: 3.0
+      v_rated: 12.0
+      v_cut_out: 25.0
+    CCHP:
+      eta_elec: 0.30
+      eta_heat: 0.45
+      COP_cool: 1.2
+    EES:
+      sigma: 0.01
+      eta_charge: 0.95
+      eta_discharge: 0.95
+      SOC_min: 0.20
+      SOC_max: 0.90
+
+  # 网络参数
+  network_defaults:
+    IEEE33:
+      nodes: 33
+      V_base: 12.66
+      V_min: 0.95
+      V_max: 1.05
+      S_base: 100
+    IEEE69:
+      nodes: 69
+      V_base: 12.66
+      V_min: 0.95
+      V_max: 1.05
+      S_base: 100
+
+  # 求解器配置
+  solver_config:
+    MILP:
+      preferred: "pulp"
+      fallback: "ortools"
+    NLP:
+      preferred: "scipy.optimize"
+      fallback: "cvxpy"
+    LP:
+      preferred: "scipy.optimize.linprog"
+      fallback: "pulp"
+
+  # 优化参数
+  optimization_defaults:
+    time_horizon: 24
+    time_resolution: 1
+    discount_factor: 0.99
+    penalty_coefficient: 1000
